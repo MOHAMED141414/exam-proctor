@@ -1,0 +1,9 @@
+# Upper bounds matter here, they are not just caution:
+#  - mediapipe 1.x removed the legacy mp.solutions API that face_analyzer.py
+#    uses (mp.solutions.face_mesh.FaceMesh), so it must stay on the 0.10.x line.
+#  - mediapipe 0.10.x pins numpy<2, and opencv-python 5.x requires numpy>=2,
+#    so OpenCV must stay on the 4.x line to keep the two consistent.
+opencv-python>=4.9.0,<5
+mediapipe>=0.10.14,<1.0
+ultralytics>=8.2.0
+numpy>=1.26.0,<2
