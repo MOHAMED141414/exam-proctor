@@ -105,12 +105,18 @@ class FaceAnalyzer:
             min_detection_confidence=0.5,
             min_tracking_confidence=0.5,
         )
+        # Split the face budget across the zones instead of hardcoding it.
+        # While this was a literal 2, MAX_FACES did nothing at all in zone
+        # mode - the mode that is switched on by default - so raising it to
+        # count a bigger room changed no behaviour. Floor of 2 per zone keeps
+        # the original intent: the student, plus an intruder leaning in.
+        per_zone = max(2, -(-max_faces // zones)) if zones else max_faces
         # One mesh per zone. MediaPipe carries tracking state between calls, so
         # feeding one instance three different crops of the same frame would
         # have it chase a face that appears to teleport.
         self.zone_meshes = [
             mp.solutions.face_mesh.FaceMesh(
-                max_num_faces=2,            # the student, plus an intruder
+                max_num_faces=per_zone,
                 refine_landmarks=True,
                 min_detection_confidence=0.5,
                 min_tracking_confidence=0.5,

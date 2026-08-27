@@ -147,6 +147,9 @@ def draw_panel(managers, camera_mgr, labels, height, width, fps, elapsed,
 def main():
     seats = config.SEAT_COUNT
     labels = config.SEAT_LABELS[:seats]
+    # Raising SEAT_COUNT without adding a label used to fail as an IndexError
+    # from inside the draw code, several frames in and nowhere near the cause.
+    labels += [f"SEAT{i + 1}" for i in range(len(labels), seats)]
 
     cam = VideoStream(config.CAMERA_SOURCE, config.CAMERA_NAME,
                       backend=getattr(config, "CAMERA_BACKEND", "MSMF"),

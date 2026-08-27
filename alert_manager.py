@@ -213,11 +213,14 @@ class AlertManager:
 
         if use_iris:
             # Iris geometry is foreshortened once the head turns far, and the
-            # look-away check already owns that case, so stand down.
+            # look-away check already owns that case, so stand down - but fall
+            # through rather than returning. Returning here left banked events
+            # unpruned, and an alert that had already met its threshold sat
+            # waiting for the head to come back before it could fire.
             if not head_forward:
-                self.holding.pop("gaze", None)
-                return
-            off = gaze_offset > self.cfg.GAZE_OFFSET_THRESHOLD
+                off = False
+            else:
+                off = gaze_offset > self.cfg.GAZE_OFFSET_THRESHOLD
         else:
             # The head-direction fallback must NOT stand down at large yaw -
             # a big turn is the clearest possible evidence of looking away.
@@ -347,11 +350,21 @@ class AlertManager:
             # throttled YOLO and hand checks, and blur survives downsampling.
             small = cv2.resize(gray, None, fx=0.5, fy=0.5)
 
-            if float(frame.mean()) < self.cfg.TAMPER_DARK_MEAN:
+            # Brightness and uniformity are measured on `small` as well, not
+            # on the full colour frame. numpy's std() over 1920x1080x3 upcasts
+            # to float64 and costs 48ms by itself; the whole method measured
+            # 61.5ms against 6ms for this version, on EVERY frame, which made
+            # the cheapest check in the system by far the most expensive.
+            # Reusing one probe also means all four tests judge the same
+            # pixels. TAMPER_BLUR_LAPVAR is calibrated at this half resolution
+            # - change the scale and that threshold silently becomes wrong.
+            mean, std = cv2.meanStdDev(small)
+
+            if mean[0][0] < self.cfg.TAMPER_DARK_MEAN:
                 reason = "feed dark"
-            elif float(frame.std()) < self.cfg.TAMPER_FLAT_STD:
+            elif std[0][0] < self.cfg.TAMPER_FLAT_STD:
                 reason = "feed flat"
-            elif cv2.Laplacian(small, cv2.CV_64F).var() < self.cfg.TAMPER_BLUR_LAPVAR:
+            elif cv2.Laplacian(small, cv2.CV_32F).var() < self.cfg.TAMPER_BLUR_LAPVAR:
                 reason = "lens covered or defocused"
             elif self._frame_frozen(small):
                 reason = "feed frozen"
