@@ -12,10 +12,11 @@ Edit these values to match your setup before running main.py.
 # camera, not the laptop). DSHOW's order was confirmed authoritatively via
 # pygrabber's device list, which names each index directly:
 #     DSHOW index 0 = DroidCam Video   (does not open under DSHOW - use MSMF)
-#     DSHOW index 1 = HP Wide Vision HD Camera   (the HP OMEN's own camera)
-#     DSHOW index 2 = phone virtual camera (Windows Virtual Camera)
-#     DSHOW index 3 = OBS Virtual Camera
-#     MSMF  index 0 = DroidCam         <-- the one we want
+#     DSHOW index 1 = HD camera        (this laptop's own camera)
+#     DSHOW index 2 = OBS Virtual Camera         <-- the one we want
+#     MSMF  index 1 = DroidCam Video   (placeholder feed, brightness ~4)
+# Re-verify per machine: this list is shorter than on the authoring machine,
+# which also had a "Windows Virtual Camera" at index 2 pushing OBS to 3.
 # Leaving the backend unset makes the index ambiguous between devices.
 #
 # DroidCam must actually be streaming: start the phone app and connect the
@@ -27,7 +28,7 @@ Edit these values to match your setup before running main.py.
 # DroidCam" placeholder the whole time and is NOT the right device here.
 # OBS must be running with Start Virtual Camera pressed, or this reads a
 # placeholder and every check reports CAMERA BLOCKED.
-CAMERA_SOURCE = 3
+CAMERA_SOURCE = 2
 CAMERA_BACKEND = "DSHOW"
 CAMERA_NAME = "Phone via OBS Virtual Camera"
 

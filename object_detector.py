@@ -74,6 +74,11 @@ class ObjectDetector:
         # even when CUDA is present and usable, which silently costs ~6x here
         # (34ms vs 222ms per sweep at 640 on this machine).
         self.device = 0 if torch.cuda.is_available() else "cpu"
+        # Raising torch's CPU thread count was measured and does nothing here:
+        # 4 threads 158/160ms against 8 threads 161/167ms per sweep, fresh
+        # process each time. An earlier apparent 201->162ms win turned out to
+        # be warm-up in the first timed run, not parallelism. Left at torch's
+        # default deliberately - the sweep is memory-bound, not core-starved.
         self.target_classes = sorted(CLASS_CATEGORY.keys())
 
     def detect(self, frame):
