@@ -23,9 +23,11 @@ class VideoStream:
     detection loop. Also auto-reconnects if the connection drops.
     """
 
-    def __init__(self, source, name="camera", backend="MSMF"):
+    def __init__(self, source, name="camera", backend="MSMF", width=None, height=None):
         self.source = source
         self.name = name
+        self.width = width
+        self.height = height
         # A URL source (DroidCam over WiFi) is handled by FFMPEG, so the
         # webcam backend choice only applies to integer device indices.
         self.backend = BACKENDS.get(str(backend).upper(), cv2.CAP_ANY) \
@@ -45,7 +47,13 @@ class VideoStream:
         self.thread = None
 
     def _open(self):
-        return cv2.VideoCapture(self.source, self.backend)
+        cap = cv2.VideoCapture(self.source, self.backend)
+        # Requested, not guaranteed - a device silently keeps its own size if
+        # it cannot honour this, so main reports what actually came back.
+        if self.width and self.height:
+            cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.width)
+            cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.height)
+        return cap
 
     def start(self):
         self.running = True

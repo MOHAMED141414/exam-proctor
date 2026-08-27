@@ -16,7 +16,7 @@ deliberately not used.
 | 8 | Second person present | More than one body or more than one face |
 | 9 | Hand at ear / mouth | Hand landmarks held near an ear or the lips |
 | 10 | Student left frame | No person and no face for 5 continuous seconds |
-| 11 | Camera blocked | Feed goes dark, flat, or dead for 3 seconds |
+| 11 | Camera blocked | Feed goes dark, flat, out of focus, or frozen for 3s |
 
 Checks 2, 3, 7, 8, 9 and 11 are the additions beyond the original four.
 
@@ -103,6 +103,16 @@ Two design notes worth knowing:
 - **Camera tampering is checked first, and suppresses the absence alert.** On
   a dead feed every detector reports "nothing there", which is otherwise
   indistinguishable from the student having walked away.
+- **Blocking is judged on focus, not just brightness.** A hand over the lens is
+  bright and textured, so dark/flat tests miss it entirely and the student reads
+  as absent. Measured on one camera: occluded frames scored 8.7-17.7 Laplacian
+  variance against 106-191 for normal ones, so focus separates them cleanly.
+- **The room is learned before it is judged.** Furniture is not a cheating aid,
+  but YOLO cannot tell a wall monitor from a smuggled one. For the first
+  `BACKGROUND_CALIBRATION_SEC` the proctor watches without alerting and records
+  whatever holds still; those positions are ignored for the rest of the session.
+  A device present and motionless from the very first second is learned as
+  furniture too - that is the price of the check. `person` is never learned.
 
 ## Tuning
 
@@ -115,16 +125,24 @@ depends on how the phone is mounted. Watch the `pitch:` number while looking
 down at the desk. If check 2 never fires, flip the sign to `+1`; if it fires
 while you look up, leave it at `-1`.
 
-## Performance
+`TAMPER_BLUR_LAPVAR` is fitted to one camera in one room and is the knob to
+re-measure first if check 11 misbehaves - dimmer light lowers Laplacian
+variance across the board, so a threshold set in a bright room will read a dim
+one as blocked. `CATEGORY_CONF_MIN` sets the confidence bar per category rather
+than globally, because the categories are not equally hard: the `notes` floor
+is low on purpose (catch more, tolerate false alarms) and `device` is high to
+hold back weak background hits.
 
-Roughly 17 fps on CPU at 640x480 with all eleven checks running - single
-camera is about 3x the throughput of the old dual-camera setup.
+## Performance
 
 - `DETECT_EVERY_N_FRAMES` controls YOLO cadence, `HANDS_EVERY_N_FRAMES`
   controls hand tracking (the most expensive check). Raise either on a slower
-  machine.
-- `yolov8n.pt` is the smallest/fastest model. `yolov8s.pt` is more accurate if
-  the machine can take it.
+  machine - watch the `fps` readout in the panel and raise the cadence if it
+  drops below roughly 8.
+- `yolov8s.pt` is the default. `yolov8n.pt` is faster but confuses an open
+  notebook with a laptop badly enough to make check 6 useless: on one logged
+  session `n` detected held-up notes once in 88 frames, at 0.21 confidence,
+  where `s` found them at 0.52-0.79.
 - ultralytics auto-uses a CUDA GPU if present, otherwise CPU.
 
 ## Known limitations
