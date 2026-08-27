@@ -36,18 +36,36 @@ RIGHT_EYE_INNER, RIGHT_EYE_OUTER = 362, 263
 FACE_LEFT_EDGE, FACE_RIGHT_EDGE = 234, 454
 
 
+class _Pt:
+    """A landmark remapped from a zone crop into full-frame normalized space."""
+    __slots__ = ("x", "y")
+
+    def __init__(self, x, y):
+        self.x = x
+        self.y = y
+
+
 def _normalize_angle(a):
-    """decomposeProjectionMatrix returns Euler angles that wrap near +-180.
-    Fold them back into a signed range so a negative pitch always means the
-    same direction instead of flipping when the head crosses a wrap point."""
-    if a > 90:
-        a -= 180
-    elif a < -90:
-        a += 180
-    return a
+    """Fold a Euler angle into [-90, 90) so a given sign always means the same
+    direction, whatever branch decomposeProjectionMatrix happened to return.
+
+    Subtracting 180 once is not enough. These angles arrive anywhere on the
+    circle, and a value near 358 folds to 178 - still outside the range, and
+    still wrong. Observed live: a head looking straight ahead reported
+    pitch 178, which made "looking down" (pitch < -14) impossible to satisfy
+    and "looking away" (|pitch| > 20) permanently true. Two checks, one
+    silently broken and one firing constantly, from the same missing wrap.
+
+    Modular arithmetic handles every branch and is idempotent, so re-applying
+    it to an already-folded angle changes nothing.
+    """
+    return ((a + 90.0) % 180.0) - 90.0
 
 
 class FaceResult:
+    """Metrics for ONE face. In multi-student mode the analyzer returns one of
+    these per face and the caller attributes each to a seat."""
+
     def __init__(self, face_found, face_count=0, yaw=0.0, pitch=0.0, mar=0.0,
                  mar_std=0.0, gaze_offset=0.0, nose_2d=None, face_width=0.0,
                  anchors=None, face_box=None):
@@ -56,12 +74,20 @@ class FaceResult:
         self.yaw = yaw
         self.pitch = pitch
         self.mar = mar
-        self.mar_std = mar_std
+        self.mar_std = mar_std              # filled in per seat by AlertManager
         self.gaze_offset = gaze_offset      # 0 = looking straight ahead
         self.nose_2d = nose_2d
         self.face_width = face_width        # px, used to scale distances
         self.anchors = anchors or []        # ear/mouth points for hand checks
         self.face_box = face_box
+        self.seat = None                    # set when found via a zone crop
+
+    @property
+    def center_x(self):
+        """Horizontal centre, used to decide which seat this face occupies."""
+        if not self.face_box:
+            return 0.0
+        return (self.face_box[0] + self.face_box[2]) / 2.0
 
 
 class FaceAnalyzer:
@@ -71,15 +97,26 @@ class FaceAnalyzer:
     Tracks up to max_faces so a second person leaning into frame is caught;
     the largest face is treated as the student for all per-student metrics."""
 
-    def __init__(self, mar_window_sec=1.5, max_faces=3):
+    def __init__(self, max_faces=6, zones=0, crop_bottom=1.0):
+        self.crop_bottom = crop_bottom
         self.face_mesh = mp.solutions.face_mesh.FaceMesh(
             max_num_faces=max_faces,
             refine_landmarks=True,          # required for the iris landmarks
             min_detection_confidence=0.5,
             min_tracking_confidence=0.5,
         )
-        self.mar_window_sec = mar_window_sec
-        self.mar_history = deque()  # (timestamp, mar)
+        # One mesh per zone. MediaPipe carries tracking state between calls, so
+        # feeding one instance three different crops of the same frame would
+        # have it chase a face that appears to teleport.
+        self.zone_meshes = [
+            mp.solutions.face_mesh.FaceMesh(
+                max_num_faces=2,            # the student, plus an intruder
+                refine_landmarks=True,
+                min_detection_confidence=0.5,
+                min_tracking_confidence=0.5,
+            )
+            for _ in range(zones)
+        ]
 
     @staticmethod
     def _face_span(lm, w, h):
@@ -105,23 +142,66 @@ class FaceAnalyzer:
         return float(np.mean(offsets)) if offsets else 0.0
 
     def analyze(self, frame):
+        """Every face in the frame, each with its own metrics.
+
+        This used to analyse only the largest face and merely count the rest,
+        which was correct when extra faces meant cheating. With one student per
+        seat every face is somebody being proctored, so each gets the full
+        treatment and the caller decides which seat it belongs to.
+        """
         h, w = frame.shape[:2]
         rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         results = self.face_mesh.process(rgb)
 
         if not results.multi_face_landmarks:
-            return FaceResult(face_found=False, face_count=0)
+            return []
 
         faces = results.multi_face_landmarks
         face_count = len(faces)
+        out = []
+        for f in faces:
+            r = self._measure(f.landmark, w, h, face_count)
+            if r is not None:
+                out.append(r)
+        return out
 
-        # The student is whichever face is largest. A second person leaning
-        # in from behind sits further from the lens and so measures smaller.
-        def area(f):
-            x1, y1, x2, y2 = self._face_span(f.landmark, w, h)
-            return (x2 - x1) * (y2 - y1)
+    def analyze_zones(self, frame, seat_count):
+        """Run face detection on each seat's crop instead of the whole frame.
 
-        lm = max(faces, key=area).landmark
+        MediaPipe downscales its input to roughly 192px before looking for a
+        face, so a 50px face in a 1280px frame arrives as about 7px and is
+        simply not found. Cropping to one seat first means that same face is
+        50px inside a ~426px strip, which survives the downscale.
+
+        Landmarks are mapped back to full-frame coordinates BEFORE any pose
+        maths runs: solvePnP uses frame width as the focal length, so measuring
+        inside a crop would silently change the camera intrinsics and skew
+        every yaw and pitch reading.
+        """
+        h, w = frame.shape[:2]
+        y1 = max(1, int(h * self.crop_bottom))
+        out = []
+        for i, mesh in enumerate(self.zone_meshes[:seat_count]):
+            x0 = int(w * i / seat_count)
+            x1 = int(w * (i + 1) / seat_count) if i < seat_count - 1 else w
+            crop = frame[0:y1, x0:x1]
+            if crop.size == 0:
+                continue
+            res = mesh.process(cv2.cvtColor(crop, cv2.COLOR_BGR2RGB))
+            if not res.multi_face_landmarks:
+                continue
+            cw, ch = x1 - x0, y1
+            for f in res.multi_face_landmarks:
+                mapped = [_Pt((p.x * cw + x0) / w, (p.y * ch) / h)
+                          for p in f.landmark]
+                r = self._measure(mapped, w, h, len(res.multi_face_landmarks))
+                if r is not None:
+                    r.seat = i
+                    out.append(r)
+        return out
+
+    def _measure(self, lm, w, h, face_count):
+        """Head pose, gaze and mouth opening for a single face's landmarks."""
         fx1, fy1, fx2, fy2 = self._face_span(lm, w, h)
 
         image_points = np.array([
@@ -146,7 +226,7 @@ class FaceAnalyzer:
             flags=cv2.SOLVEPNP_ITERATIVE,
         )
         if not ok:
-            return FaceResult(face_found=False, face_count=face_count)
+            return None
 
         rotation_mat, _ = cv2.Rodrigues(rotation_vec)
         pose_mat = cv2.hconcat((rotation_mat, np.zeros((3, 1))))
@@ -161,13 +241,10 @@ class FaceAnalyzer:
         horizontal = np.linalg.norm(left - right)
         mar = float(np.linalg.norm(top - bottom) / horizontal) if horizontal > 0 else 0.0
 
-        now = time.time()
-        self.mar_history.append((now, mar))
-        while self.mar_history and now - self.mar_history[0][0] > self.mar_window_sec:
-            self.mar_history.popleft()
-        mar_values = [m for _, m in self.mar_history]
-        mar_std = float(np.std(mar_values)) if len(mar_values) > 2 else 0.0
-
+        # mar_std is deliberately NOT computed here. It is the variance of mouth
+        # opening over a rolling window, and each student needs their own
+        # window - one shared history would blend three people's mouths into a
+        # single signal. The per-seat AlertManager owns it now.
         anchors = [
             (lm[FACE_LEFT_EDGE].x * w, lm[FACE_LEFT_EDGE].y * h),
             (lm[FACE_RIGHT_EDGE].x * w, lm[FACE_RIGHT_EDGE].y * h),
@@ -181,7 +258,6 @@ class FaceAnalyzer:
             yaw=yaw,
             pitch=pitch,
             mar=mar,
-            mar_std=mar_std,
             gaze_offset=self._gaze_offset(lm, w),
             nose_2d=nose_2d,
             face_width=float(fx2 - fx1),
@@ -191,6 +267,8 @@ class FaceAnalyzer:
 
     def close(self):
         self.face_mesh.close()
+        for m in self.zone_meshes:
+            m.close()
 
 
 class HandAnalyzer:
@@ -198,7 +276,7 @@ class HandAnalyzer:
     at the ear or mouth? That covers an earpiece being adjusted, a whispered
     exchange, and a hand cupped to hide the lips from the camera."""
 
-    def __init__(self, max_hands=2):
+    def __init__(self, max_hands=6):
         self.hands = mp.solutions.hands.Hands(
             max_num_hands=max_hands,
             model_complexity=0,             # fastest variant, enough for proximity

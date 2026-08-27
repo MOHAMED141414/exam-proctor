@@ -1,9 +1,14 @@
 # Upper bounds matter here, they are not just caution:
 #  - mediapipe 1.x removed the legacy mp.solutions API that face_analyzer.py
-#    uses (mp.solutions.face_mesh.FaceMesh), so it must stay on the 0.10.x line.
-#  - mediapipe 0.10.x pins numpy<2, and opencv-python 5.x requires numpy>=2,
-#    so OpenCV must stay on the 4.x line to keep the two consistent.
+#    uses (mp.solutions.face_mesh.FaceMesh). The 0.10.x line itself dropped
+#    mp.solutions again in a later point release (confirmed gone by 0.10.35),
+#    so pin the exact last version verified to still have it.
+#  - mediapipe 0.10.14 pulls in jax/jaxlib, which want numpy>=2, conflicting
+#    with mediapipe's own numpy<2 pin and opencv-python's 4.x line. Installing
+#    numpy after mediapipe (per README) resolves it in practice; pip's
+#    resulting "jax requires numpy>=2" warning is safe to ignore since nothing
+#    here uses jax.
 opencv-python>=4.9.0,<5
-mediapipe>=0.10.14,<1.0
+mediapipe==0.10.14
 ultralytics>=8.2.0
 numpy>=1.26.0,<2
